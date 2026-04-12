@@ -84,81 +84,49 @@ class DashboardController extends Controller
     public function chart()
     {
         $driver = DB::getDriverName();
-
-        // Get absences grouped by month for the current academic year
-        $currentYear = (int) date('Y');
-        $currentMonth = (int) date('m');
-        // Academic year: Sep–Jun. If we're in Sep+ use current year, else previous.
-        $startYear = $currentMonth >= 9 ? $currentYear : $currentYear - 1;
-
-        $months = [];
-        // Sep through current month (up to Jun next year)
-        for ($m = 9; $m <= 12; $m++) {
-            $months[] = Carbon::create($startYear, $m, 1);
-        }
-        for ($m = 1; $m <= min($currentMonth, 6); $m++) {
-            $months[] = Carbon::create($startYear + 1, $m, 1);
-        }
-
+        $today = Carbon::today();
+        $start = $today->copy()->subDays(29); // last 30 days
         $totalStudents = max(Student::count(), 1);
 
-        // Get monthly absence hours — compatible with MySQL and PostgreSQL
         if ($driver === 'pgsql') {
             $rows = Absence::select(
-                    DB::raw('EXTRACT(YEAR FROM date)::int as y'),
-                    DB::raw('EXTRACT(MONTH FROM date)::int as m'),
+                    DB::raw('date::text as date_str'),
                     DB::raw('COALESCE(SUM(hours), 0) as total_hours'),
                     DB::raw('COUNT(*) as absence_count')
                 )
-                ->where(function ($q) use ($startYear) {
-                    $q->where(function ($q2) use ($startYear) {
-                        $q2->whereRaw('EXTRACT(YEAR FROM date) = ?', [$startYear])
-                           ->whereRaw('EXTRACT(MONTH FROM date) >= 9');
-                    })->orWhere(function ($q2) use ($startYear) {
-                        $q2->whereRaw('EXTRACT(YEAR FROM date) = ?', [$startYear + 1])
-                           ->whereRaw('EXTRACT(MONTH FROM date) <= 6');
-                    });
-                })
-                ->groupBy(DB::raw('EXTRACT(YEAR FROM date)'), DB::raw('EXTRACT(MONTH FROM date)'))
+                ->where('date', '>=', $start->toDateString())
+                ->where('date', '<=', $today->toDateString())
+                ->groupBy('date')
                 ->get()
-                ->keyBy(fn ($r) => $r->y . '-' . $r->m);
+                ->keyBy('date_str');
         } else {
-            // MySQL / SQLite
             $rows = Absence::select(
-                    DB::raw('YEAR(date) as y'),
-                    DB::raw('MONTH(date) as m'),
+                    DB::raw('DATE(date) as date_str'),
                     DB::raw('COALESCE(SUM(hours), 0) as total_hours'),
                     DB::raw('COUNT(*) as absence_count')
                 )
-                ->where(function ($q) use ($startYear) {
-                    $q->where(function ($q2) use ($startYear) {
-                        $q2->whereYear('date', $startYear)
-                           ->whereRaw('MONTH(date) >= 9');
-                    })->orWhere(function ($q2) use ($startYear) {
-                        $q2->whereYear('date', $startYear + 1)
-                           ->whereRaw('MONTH(date) <= 6');
-                    });
-                })
-                ->groupBy(DB::raw('YEAR(date)'), DB::raw('MONTH(date)'))
+                ->where('date', '>=', $start->toDateString())
+                ->where('date', '<=', $today->toDateString())
+                ->groupBy(DB::raw('DATE(date)'))
                 ->get()
-                ->keyBy(fn ($r) => $r->y . '-' . $r->m);
+                ->keyBy('date_str');
         }
 
         $data = [];
-        foreach ($months as $dt) {
-            $key = $dt->year . '-' . $dt->month;
+        for ($i = 0; $i < 30; $i++) {
+            $dt = $start->copy()->addDays($i);
+            $key = $dt->toDateString();
             $row = $rows->get($key);
             $absenceHours = $row ? (float) $row->total_hours : 0;
             $absenceCount = $row ? (int) $row->absence_count : 0;
-
             $data[] = [
-                'month'      => $dt->format('M'),
-                'attendance' => round(max(0, ($totalStudents * 20) - $absenceHours), 1), // approximate present hours (20 working days × 1h avg)
+                'day'        => $dt->format('D'),
+                'date'       => $dt->format('Y-m-d'),
+                'attendance' => round(max(0, ($totalStudents * 8) - $absenceHours), 1), // 8h per day
                 'absences'   => round($absenceHours, 1),
                 'count'      => $absenceCount,
             ];
         }
-
         return response()->json(['data' => $data]);
     }
 
