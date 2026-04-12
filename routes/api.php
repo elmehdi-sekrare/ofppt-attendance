@@ -44,6 +44,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/groups/{group}/students', [GroupController::class, 'students']);
 
     // Absences
+    Route::get('/absences/student-history/{student}', [AbsenceController::class, 'studentHistory']);
     Route::get('/absences', [AbsenceController::class, 'index']);
     Route::post('/absences', [AbsenceController::class, 'store']);
 
@@ -59,3 +60,4 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/notifications/read-all', [NotificationController::class, 'markAllRead']);
     Route::delete('/notifications/clear', [NotificationController::class, 'clear']);
 });
+
