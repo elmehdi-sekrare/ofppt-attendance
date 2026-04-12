@@ -8,27 +8,87 @@ use App\Mail\AbsenceMarkedMail;
 use App\Mail\AbsenceThresholdMail;
 use App\Models\Absence;
 use App\Models\Notification;
+use App\Models\Student;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Validator;
 
 class AbsenceController extends Controller
 {
+    /** GET /api/absences/student-history/{student} */
+    public function studentHistory(Request $request, Student $student)
+    {
+        $user = $request->user();
+
+        if ($user->role === 'student') {
+            if ((int) $user->student->id !== (int) $student->id) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+        } elseif ($user->role === 'teacher') {
+            if (!$user->teacher) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            $allowedGroupIds = $user->teacher->groups()->pluck('groups.id');
+            if (!$allowedGroupIds->contains($student->group_id)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+        }
+
+        $absences = Absence::with(['student.user', 'teacher.user', 'group'])
+            ->where('student_id', $student->id)
+            ->orderByDesc('date')
+            ->orderByDesc('created_at')
+            ->get();
+
+        return AbsenceResource::collection($absences);
+    }
+
     /** GET /api/absences */
     public function index(Request $request)
     {
         $query = Absence::with(['student.user', 'teacher.user', 'group']);
 
         $user = $request->user();
+        $requestedStudentRaw = $request->input('student_id');
+        $hasRequestedStudent = $request->exists('student_id') && $requestedStudentRaw !== '';
+        $requestedStudentId = null;
 
-        // Auto-filter by role
-        if ($user->role === 'student') {
-            $query->where('student_id', $user->student->id);
-        } elseif ($user->role === 'teacher') {
-            $query->where('teacher_id', $user->teacher->id);
+        if ($hasRequestedStudent) {
+            $requestedStudentId = (int) $requestedStudentRaw;
+            Validator::make(
+                ['student_id' => $requestedStudentRaw],
+                ['student_id' => 'integer|exists:students,id']
+            )->validate();
         }
 
-        // Optional filters
+        if ($user->role === 'student') {
+            $query->where('student_id', $user->student->id);
+            if ($hasRequestedStudent && (int) $requestedStudentId !== (int) $user->student->id) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+        } elseif ($user->role === 'teacher') {
+            if (!$user->teacher) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            if ($hasRequestedStudent) {
+                $student = Student::query()->select(['id', 'group_id'])->find($requestedStudentId);
+                $allowedGroupIds = $user->teacher->groups()->pluck('groups.id');
+
+                if (!$student || !$allowedGroupIds->contains($student->group_id)) {
+                    return response()->json(['message' => 'Forbidden'], 403);
+                }
+
+                $query->where('student_id', $requestedStudentId);
+            } else {
+                $query->where('teacher_id', $user->teacher->id);
+            }
+        } elseif ($hasRequestedStudent) {
+            $query->where('student_id', $requestedStudentId);
+        }
+
         if ($request->filled('group')) {
             $query->whereHas('group', fn ($q) => $q->where('name', $request->group));
         }
@@ -43,15 +103,13 @@ class AbsenceController extends Controller
             $search = $request->search;
             $query->whereHas('student.user', function ($q) use ($search) {
                 $q->where('first_name', 'like', "%{$search}%")
-                  ->orWhere('last_name', 'like', "%{$search}%");
+                    ->orWhere('last_name', 'like', "%{$search}%");
             });
         }
 
-        // Sorting
         $sort = $request->get('sort', 'latest');
         $query->orderBy('date', $sort === 'latest' ? 'desc' : 'asc');
 
-        // Limit
         if ($request->filled('limit')) {
             $query->limit((int) $request->limit);
         }
@@ -116,7 +174,6 @@ class AbsenceController extends Controller
                 'type' => 'error',
             ]);
 
-            // Send email notification to student
             try {
                 Mail::to($absence->student->user->email)
                     ->send(new AbsenceMarkedMail($absence));
@@ -124,7 +181,6 @@ class AbsenceController extends Controller
                 \Log::error('Absence email failed to ' . $absence->student->user->email . ': ' . $e->getMessage());
             }
 
-            // Check absence threshold (3+ absences triggers alert)
             try {
                 $student = $absence->student;
                 $totalAbsences = Absence::where('student_id', $student->id)->count();
@@ -135,19 +191,25 @@ class AbsenceController extends Controller
                         ->where('status', '!=', 'justified')
                         ->count();
 
-                    // Alert the student
                     Mail::to($student->user->email)
                         ->send(new AbsenceThresholdMail(
-                            $student, $totalAbsences, $totalHours, $unjustifiedCount,
-                            'student', $student->user->first_name . ' ' . $student->user->last_name
+                            $student,
+                            $totalAbsences,
+                            $totalHours,
+                            $unjustifiedCount,
+                            'student',
+                            $student->user->first_name . ' ' . $student->user->last_name
                         ));
 
-                    // Alert admins
                     foreach ($adminUsers as $admin) {
                         Mail::to($admin->email)
                             ->send(new AbsenceThresholdMail(
-                                $student, $totalAbsences, $totalHours, $unjustifiedCount,
-                                'admin', $admin->first_name . ' ' . $admin->last_name
+                                $student,
+                                $totalAbsences,
+                                $totalHours,
+                                $unjustifiedCount,
+                                'admin',
+                                $admin->first_name . ' ' . $admin->last_name
                             ));
                     }
                 }
