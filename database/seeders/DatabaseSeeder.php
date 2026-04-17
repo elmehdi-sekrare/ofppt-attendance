@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use Database\Seeders\DemoAccessSeeder;
 use App\Models\User;
 use App\Models\Group;
 use App\Models\Student;
@@ -121,5 +122,7 @@ class DatabaseSeeder extends Seeder
                 ]);
             }
         }
+
+        $this->call(DemoAccessSeeder::class);
     }
 }
